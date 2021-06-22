@@ -87,7 +87,9 @@ Implementation:
 
 
 A few more notes for Modders:
- • The Python-Version of Civ4 does not contain zlib-support! Thus, you can not just use the internal
+ • The Python version of Civ4 has no encription libs included. You can not fetch files from https sites but http only.
+
+ • The Python version of Civ4 does not contain zlib-support, too! Thus, you can not just use the internal
    python lib to unzip files, but the indirection over the dll.
 
  • Normally, you can not decide if the user has installed the mod into the game installation directory
@@ -107,9 +109,8 @@ A few more notes for Modders:
    Secondly, the drawing of the main menu begins after onWindowActivation(). This hides everything
    behind the background image.
 
-   Starting a new Python thread for some delayed redrawing command fails because the Cy*-Objects did
-   not live long enough. (?!)
-   I resolved this problem by starting a new thread over a DLL call.
+	 To solve this timing issue the first drawing of the screen is now
+	 triggered in "CvGame::getActivePlayer". This will be called from the main menu event loop.
 
 
 Issues:
@@ -124,6 +125,9 @@ Issues:
         return 1;
       }
 
+   As workaround you can update over cli:
+   Run Assets/Python/Extras/ModUpdater.py with a python2 interpreter.
+
 
 Extras:
  • To automate the update zip creation, the 'createUpdate.py' script can be used (Linux/Mac only).
@@ -131,4 +135,4 @@ Extras:
 
 Thanks:
   The Caveman2Cosmos developer, who compiled the missing boost libraries for the ancient 1.32 version.
-
+  F1rpo: For the getActivePlayer suggestion and the hint how to rename exported functions.
