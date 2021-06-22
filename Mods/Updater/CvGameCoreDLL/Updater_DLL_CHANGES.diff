@@ -1,207 +1,105 @@
-diff --git a/CvGameCoreDLL/CvGame.cpp b/CvGameCoreDLL/CvGame.cpp
-index 63ade8d..765c2d7 100644
---- a/CvGameCoreDLL/CvGame.cpp
-+++ b/CvGameCoreDLL/CvGame.cpp
-@@ -30,9 +30,108 @@
- #include "CvDLLEngineIFaceBase.h"
- #include "CvDLLPythonIFaceBase.h"
- 
-+//Updater Mod
-+
-+/* Delayed Python Call stuff ... */
-+
-+#ifdef WITH_TIMER
-+class Timer : boost::noncopyable
-+{
-+		boost::xtime wait_time, next_time;
-+		boost::mutex monitor;
-+		boost::condition aborted;
-+		boost::thread thread;
-+		CvGame *m_pGame;
-+public:
-+
-+		explicit Timer(boost::xtime const & interval, CvGame *pGame)
-+				: wait_time(interval)
-+				, m_pGame(pGame)
-+				, thread( boost::bind(& Timer::thread_body, this) )
-+		{ }
-+
-+		~Timer()
-+		{
-+				aborted.notify_one();
-+#ifdef NEWER_BOOST_VERSION_REQ
-+				try
-+				{
-+						thread.join();
-+				}
-+				catch ( const boost::thread_interrupted& )
-+				{
-+						/* suppressed to avoid kill of application*/ 
-+				}
-+#else
-+				thread.join();
-+#endif
-+		}
-+
-+		private:
-+
-+		void calc_next_time()
-+		{
-+				boost::xtime_get(& next_time, boost::TIME_UTC);
-+				next_time.sec += wait_time.sec;
-+				next_time.nsec += wait_time.nsec;
-+				next_time.sec += next_time.nsec / 1000000000;
-+				next_time.nsec %= 1000000000;
-+		}
-+
-+		void thread_body()
-+		{
-+				boost::mutex::scoped_lock lock(monitor);
-+
-+				for (;;)
-+				{
-+						calc_next_time();
-+						if (aborted.timed_wait(lock, next_time)) break;
-+
-+						// Event ...
-+						//std::cout << "event" << std::endl;
-+						int next_milliseconds = m_pGame->delayedPythonCall2();
-+
-+						if (next_milliseconds == 0){
-+								break; // Quit delayed thread
-+						}
-+
-+						wait_time.sec = next_milliseconds/1000;
-+						wait_time.nsec = (next_milliseconds%1000)*1000000L;
-+				}
-+		}
-+};
-+#endif
-+
-+int CvGame::delayedPythonCall(int milliseconds, int arg1, int arg2)
-+{
-+#ifdef WITH_TIMER 
-+		// Destroy previous timer object. If this timer is still waiting, it will abort.
-+		if (m_pTimer){
-+				delete m_pTimer; m_pTimer = NULL;
-+		}
-+
-+		// Save handle to current thread. It suspends this thread if delayedPythonCall2
-+		// is called. (Hardcore mutex :))
-+		DuplicateHandle(GetCurrentProcess(),
-+						GetCurrentThread(),
-+						GetCurrentProcess(),
-+						&m_pMainThreadDup,
-+						0,
-+						FALSE,
-+						DUPLICATE_SAME_ACCESS);
-+
-+		m_timerArgsList.clear();
-+		m_timerArgsList.add(arg1);
-+		m_timerArgsList.add(arg2);
-+
-+		boost::xtime interval = { milliseconds/1000, (milliseconds%1000)*1000000L }; // sec, nanosec.
-+		m_pTimer = new Timer(interval, this);
-+#endif
-+		return 0;
-+}
-+
-+int CvGame::delayedPythonCall2()
-+{
-+		long lResult=0;
-+		if( m_pMainThreadDup ){
-+			SuspendThread(m_pMainThreadDup);
-+		}
-+		gDLL->getPythonIFace()->callFunction(PYGameModule, "delayedPythonCall", m_timerArgsList.makeFunctionArgs(), &lResult);
-+		if( m_pMainThreadDup ){
-+			ResumeThread(m_pMainThreadDup);
-+		}
-+		if (lResult >= 0)
-+		{
-+			 return lResult; // Repeat
-+		}
-+
-+		return 0; // Abort
-+}
-+//PB Mod END
-+
+diff --git a/CvGame.cpp b/CvGame.cpp
+index e07a98d..73c7df8 100644
+--- a/CvGame.cpp
++++ b/CvGame.cpp
+@@ -33,6 +33,8 @@
  // Public Functions...
  
  CvGame::CvGame()
-+#ifdef WITH_TIMER
-+		: m_pTimer(NULL)
-+		, m_pMainThreadDup(NULL)
-+		, m_timerArgsList()
-+#endif
++		: m_bUpdaterShown(false)
++		, m_iMainMenuDrawnCounter(0)
  {
  	m_aiRankPlayer = new int[MAX_PLAYERS];        // Ordered by rank...
  	m_aiPlayerRank = new int[MAX_PLAYERS];        // Ordered by player ID...
-@@ -73,6 +172,12 @@ CvGame::~CvGame()
- {
- 	uninit();
- 
-+#ifdef WITH_TIMER
-+	if (m_pTimer){
-+			delete m_pTimer; m_pTimer = NULL;
-+	}
-+#endif
+@@ -749,7 +751,7 @@ void CvGame::assignStartingPlots()
+ 	int iValue;
+ 	int iBestValue;
+ 	int iI, iJ, iK;
+-	
 +
- 	SAFE_DELETE_ARRAY(m_aiRankPlayer);
- 	SAFE_DELETE_ARRAY(m_aiPlayerRank);
- 	SAFE_DELETE_ARRAY(m_aiPlayerScore);
-diff --git a/CvGameCoreDLL/CvGame.h b/CvGameCoreDLL/CvGame.h
-index 4f77fbd..6d4e903 100644
---- a/CvGameCoreDLL/CvGame.h
-+++ b/CvGameCoreDLL/CvGame.h
-@@ -9,6 +9,22 @@
+ 	std::vector<int> playerOrder;
+ 	std::vector<int>::iterator playerOrderIter;
+ 
+@@ -4475,12 +4477,27 @@ void CvGame::sendPlayerOptions(bool bForce)
+ 	}
+ }
+ 
+-
+ PlayerTypes CvGame::getActivePlayer() const
+ {
+ 	return GC.getInitCore().getActivePlayer();
+ }
+ 
++PlayerTypes CvGame::getActivePlayerExternal() const
++{
++	if (!m_bUpdaterShown)
++	{
++		CyArgsList argsList;
++		argsList.add(++m_iMainMenuDrawnCounter);
++
++		long lResult = 0;
++		gDLL->getPythonIFace()->callFunction(PYGameModule, "showUpdater", argsList.makeFunctionArgs(), &lResult);
++		if (lResult == 1 || /* Fallback */ m_iMainMenuDrawnCounter > 2048){
++			m_bUpdaterShown = true;
++		}
++	}
++	return GC.getInitCore().getActivePlayer();
++}
++
+ 
+ void CvGame::setActivePlayer(PlayerTypes eNewValue, bool bForceHotSeat)
+ {
+diff --git a/CvGame.h b/CvGame.h
+index fe21e3d..0f319b4 100644
+--- a/CvGame.h
++++ b/CvGame.h
+@@ -9,6 +9,12 @@
  #include "CvDeal.h"
  #include "CvRandom.h"
  
-+// Updater Mod
-+#include <iostream>
-+
-+#define BOOST_THREAD_NO_LIB
-+#define BOOST_THREAD_USE_LIB
-+#include <boost/bind.hpp>
-+#include <boost/thread.hpp>
-+#include <boost/noncopyable.hpp>
-+
++// mod-updater
++//#include <iostream>
 +#include "CyArgsList.h"
-+
-+#define WITH_TIMER
-+class Timer;
-+// Updater Mod END
++// mod-updater END
 +
 +
  class CvPlot;
  class CvCity;
  class CvReplayMessage;
-@@ -542,6 +558,8 @@ public:
+@@ -278,7 +284,19 @@ public:
+ 	DllExport bool isPlayerOptionsSent() const;
+ 	DllExport void sendPlayerOptions(bool bForce = false);
  
- 	DllExport void handleDiplomacySetAIComment(DiploCommentTypes eComment) const;
- 	DllExport bool isDiploScreenUp() const;
-+	DllExport int delayedPythonCall(int milliseconds, int arg1 = -1, int arg2 = -1); // Starts new thread
-+	int delayedPythonCall2(); // Called by other thread
+-	DllExport PlayerTypes getActivePlayer() const;																				// Exposed to Python
++	// mod-updater
++	/* Split getActivePlayer into two cases. The default one for the internal calls
++	   and a second for calls from Civ4's Exe. This allows us to detecting the finishing of
++	   the main menu drawing with a small overhead.
++	   Suggestion from f1rpo, see https://forums.civfanatics.com/threads/replacing-the-custom-game-screen-proof-of-concept.670307/#post-16114837
++
++	   Add ?getActivePlayer@CvGame@@QBE?AW4PlayerTypes@@XZ=?getActivePlayerExternal@CvGame@@QBE?AW4PlayerTypes@@XZ
++	   to CvGameCoreDLL.def
++	*/
++	/* DllExport */ PlayerTypes getActivePlayer() const; // Exposed to Python
++	/* DllExport as getActivePlayer() by Def-file */ PlayerTypes getActivePlayerExternal() const;
++	// mod-updater END
++
+ 	DllExport void setActivePlayer(PlayerTypes eNewValue, bool bForceHotSeat = false);		// Exposed to Python
+ 	DllExport void updateUnitEnemyGlow();
  
- protected:
- 	int m_iElapsedGameTurns;
-@@ -645,6 +663,14 @@ protected:
+@@ -644,6 +662,11 @@ protected:
  	int		m_iNumCultureVictoryCities;
  	int		m_eCultureVictoryCultureLevel;
  
-+// Updater Mod
-+#ifdef WITH_TIMER
-+	Timer *m_pTimer;
-+	HANDLE m_pMainThreadDup;
-+	CyArgsList m_timerArgsList;
-+#endif
-+// Updater Mod END
-+
++	// mod-updater
++	mutable bool m_bUpdaterShown;
++	mutable int m_iMainMenuDrawnCounter;
++	// mod-updater END
 +
  	void doTurn();
  	void doDeals();
  	void doGlobalWarming();
-@@ -686,6 +712,7 @@ protected:
+@@ -685,6 +708,7 @@ protected:
  	CvPlot* normalizeFindLakePlot(PlayerTypes ePlayer);
  
  	void doUpdateCacheOnTurn();
@@ -209,22 +107,22 @@ index 4f77fbd..6d4e903 100644
  };
  
  #endif
-diff --git a/CvGameCoreDLL/CvGameCoreDLL.cpp b/CvGameCoreDLL/CvGameCoreDLL.cpp
-index 0f19090..ac43156 100644
---- a/CvGameCoreDLL/CvGameCoreDLL.cpp
-+++ b/CvGameCoreDLL/CvGameCoreDLL.cpp
+diff --git a/CvGameCoreDLL.cpp b/CvGameCoreDLL.cpp
+index 6a47e53..54d5acf 100644
+--- a/CvGameCoreDLL.cpp
++++ b/CvGameCoreDLL.cpp
 @@ -4,6 +4,16 @@
  
  #include <new>
  
-+// Updater Mod
++// PB Mod
 +#include <cstdlib>
 +#include <string.h>
 +#include <iostream>
 +
 +#pragma comment(lib, "Ole32.lib")
 +#pragma comment(lib, "OleAut32.lib")
-+// Updater Mod END
++// PB Mod END
 +
 +
  #include "CvGlobals.h"
@@ -238,7 +136,7 @@ index 0f19090..ac43156 100644
 \ No newline at end of file
 +}
 +
-+// Updater Mod
++// PB Mod
 +
 +int StringToWString(std::wstring &ws, const std::string &s)
 +{
@@ -378,11 +276,11 @@ index 0f19090..ac43156 100644
 +	}
 +}
 +
-+// Updater Mod END
-diff --git a/CvGameCoreDLL/CvGameCoreDLL.h b/CvGameCoreDLL/CvGameCoreDLL.h
-index c20cbb2..0d031b2 100644
---- a/CvGameCoreDLL/CvGameCoreDLL.h
-+++ b/CvGameCoreDLL/CvGameCoreDLL.h
++// PB Mod END
+diff --git a/CvGameCoreDLL.h b/CvGameCoreDLL.h
+index a807961..e1814ef 100644
+--- a/CvGameCoreDLL.h
++++ b/CvGameCoreDLL.h
 @@ -13,8 +13,18 @@
  //
  #pragma warning( disable: 4530 )	// C++ exception handler used, but unwind semantics are not enabled
@@ -406,29 +304,38 @@ index c20cbb2..0d031b2 100644
  void startProfilingDLL();
  void stopProfilingDLL();
  
-+// Updater Mod
++// PB Mod
 +int StringToWString(std::wstring &ws, const std::string &s);
 +int CharToWString(std::wstring &ws, const char *chars);
 +const char *get_dll_folder();
 +bool Unzip2Folder( BSTR lpZipFile, BSTR lpFolder);
-+// Updater Mod End
++// PB Mod End
 +
  //
  // Boost Python
  //
-diff --git a/CvGameCoreDLL/CyGame.cpp b/CvGameCoreDLL/CyGame.cpp
-index fe06140..b4e240b 100644
---- a/CvGameCoreDLL/CyGame.cpp
-+++ b/CvGameCoreDLL/CyGame.cpp
-@@ -1209,3 +1209,52 @@ void CyGame::sendTurnCompletePB(int iPlayer){
-     GC.getInitCore().sendTurnCompletePB((PlayerTypes) iPlayer);
+diff --git a/CyGame.cpp b/CyGame.cpp
+index c7675b4..a4df030 100644
+--- a/CyGame.cpp
++++ b/CyGame.cpp
+@@ -5,6 +5,8 @@
+ #include "CvGameCoreDLL.h"
+ #include "CyGame.h"
+ #include "CvGameAI.h"
++#include "CvInitCore.h"
++
+ #include "CyGlobalContext.h"
+ #include "CyPlayer.h"
+ //#include "CvEnums.h"
+@@ -1153,3 +1155,45 @@ void CyGame::doControl(int iControl)
+ 		m_pGame->doControl((ControlTypes) iControl);
  	}
  }
 +
 +std::wstring __mod_path__; // static variable to avoid local one.
 +std::wstring CyGame::getModPath()
 +{
-+	const char *path = get_dll_folder();
++	const char *path = get_dll_folder();  
 +
 +	// Remove lowest folder (\Assets)
 +	char *last_slash = strrchr(path, '\\');
@@ -441,10 +348,23 @@ index fe06140..b4e240b 100644
 +
 +int CyGame::unzipModUpdate(std::wstring zipFilename)
 +{
-+	std::wstring out_folder(getModPath());
++	std::wstring out_folder(getModPath());   
 +	BSTR out_folder_bstr = SysAllocString(out_folder.c_str());
 +	
++#if 0
++	// Manuell konstruieren
++	const char *dll_folder = get_dll_folder();
++	std::string absolute_path = std::string(dll_folder);
++	absolute_path.append("\\");
++	absolute_path.append("Update 1.zip");
++	std::wstring wabsolute_path;
++	StringToWString(wabsolute_path, absolute_path);
++  BSTR z_bstr = SysAllocString(wabsolute_path.c_str()); //=>File not found error
++	free((void *)dll_folder);
++#else
++	//BSTR z_bstr = SysAllocString(L"I:\\Olaf\\Civ4\\Beyond the Sword\\Mods\\PB Mod_v7\\Update 1.zip");//ok
 +	BSTR z_bstr = SysAllocString(zipFilename.c_str());
++	//BSTR z_bstr = SysAllocString(L"Z:\\home\\olaf\\Civ4\\Civ4\\Beyond the Sword\\Mods\\PB Mod_v7\\Update 1.zip");
 +#endif
 +
 +	int ret = Unzip2Folder(z_bstr, out_folder_bstr);
@@ -453,52 +373,87 @@ index fe06140..b4e240b 100644
 +	SysFreeString(out_folder_bstr);
 +	return ret;
 +}
-+
-+/* Delayed Python Call stuff ... */
-+int CyGame::delayedPythonCall(int milliseconds, int arg1, int arg2)
-+{
-+	return (NULL != m_pGame ? m_pGame->delayedPythonCall(milliseconds, arg1, arg2) : -1);
-+}
-+
-diff --git a/CvGameCoreDLL/CyGame.h b/CvGameCoreDLL/CyGame.h
-index ea0cf3a..42614ff 100644
---- a/CvGameCoreDLL/CyGame.h
-+++ b/CvGameCoreDLL/CyGame.h
-@@ -280,6 +280,9 @@ public:
- 	int setCivPassword(int ePlayer, const char *ssNewPw, const char *szAdminPw);
- 	bool isDiploScreenUp() const;
- 	void sendTurnCompletePB(int iPlayer);
+diff --git a/CyGame.h b/CyGame.h
+index d8a8bff..2358aeb 100644
+--- a/CyGame.h
++++ b/CyGame.h
+@@ -271,6 +271,9 @@ public:
+ 	bool isEventActive(int /*EventTriggerTypes*/ eTrigger);
+ 	void doControl(int iControl);
+ 
 +	std::wstring getModPath();
 +	int unzipModUpdate(std::wstring zipFilename);
-+	int delayedPythonCall(int milliseconds, int arg1, int arg2);
- 
++
  protected:
  	CvGame* m_pGame;
-diff --git a/CvGameCoreDLL/CyGameInterface.cpp b/CvGameCoreDLL/CyGameInterface.cpp
-index c75d934..639ec38 100644
---- a/CvGameCoreDLL/CyGameInterface.cpp
-+++ b/CvGameCoreDLL/CyGameInterface.cpp
-@@ -269,6 +269,9 @@ void CyGamePythonInterface()
- 		.def("setCivPassword", &CyGame::setCivPassword, "int (int ePlayer, const char *szNewPw, const char *szAdminPw) - Allows change of passwords over webinterface")
- 		.def("isDiploScreenUp", &CyGame::isDiploScreenUp, "bool ()")
- 		.def("sendTurnCompletePB", &CyGame::sendTurnCompletePB, "void (int iPlayer)")
+ };
+diff --git a/CyGameInterface.cpp b/CyGameInterface.cpp
+index b22299c..99fe9f2 100644
+--- a/CyGameInterface.cpp
++++ b/CyGameInterface.cpp
+@@ -261,6 +261,8 @@ void CyGamePythonInterface()
+ 
+ 		.def("isEventActive", &CyGame::isEventActive, "bool (int /*EventTriggerTypes*/ eTrigger)")
+ 		.def("doControl", &CyGame::doControl, "void (int /*ControlTypes*/ iControl)")
 +		.def("getModPath", &CyGame::getModPath, "wstring getModPath() - Return absolute path to folder of used CvGameCoreDLL.dll.")
 +		.def("unzipModUpdate", &CyGame::unzipModUpdate, "int (wstring zipFilename) - Unzip file into the Mod installation folder.")
-+		.def("delayedPythonCall", &CyGame::delayedPythonCall, "int (int milliseconds, int arg1, int arg2) - Call function delayed (unblocked).")
  		;
  
  	python::class_<CyDeal>("CyDeal")
-diff --git a/CvGameCoreDLL/Makefile b/CvGameCoreDLL/Makefile
-index c71ae0e..4c0754b 100644
---- a/CvGameCoreDLL/Makefile
-+++ b/CvGameCoreDLL/Makefile
-@@ -69,7 +69,8 @@ Release_INCS=$(PROJECT_INCS) $(GLOBAL_INCS)
+diff --git a/Makefile b/Makefile
+index fe7d440..6d8fbfa 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1,6 +1,7 @@
+ #### Civilization 4 SDK Makefile 1.0 ####
+ ####  Copyright 2010 Danny Daemonic  ####
+ #########################################
++# Debug: magic function: 479A70
  
+ #### Paths ####
+ #TOOLKIT=C:\Programme\Microsoft Visual C++ Toolkit 2003
+@@ -8,9 +9,7 @@ TOOLKIT=I:\Olaf\Microsoft Visual C++ Toolkit 2003
+ #PSDK=C:\Programme\Microsoft SDKs\Windows\v7.0A
+ PSDK=I:\Olaf\WinSdk
+ ## Uncomment to have newly compiled dlls copied to your mod's Assets directory
+-#YOURMOD=C:\Users\Danny\Documents\My Games\beyond the sword\MODS\MyMod
+-#YOURMOD=H:\Eigene Dateien\My Games\Col\MODS\TAC 2.03_final
+-YOURMOD=I:\Olaf\Civ4\Beyond the Sword\Mods\PB Mod_v1
++YOURMOD=I:\Olaf\Civ4\Beyond the Sword\Mods\Updater
+ 
+ #### Tools ####
+ CC="$(TOOLKIT)\bin\cl.exe"
+@@ -54,7 +53,9 @@ Release_OTHER=Release\CvGameCoreDLL.exp
+ #### CFLAGS ####
+ GLOBAL_CFLAGS=/GR /Gy /W3 /EHsc /Gd /Gm- /DWIN32 /D_WINDOWS /D_USRDLL /DCVGAMECOREDLL_EXPORTS /Yu"CvGameCoreDLL.h"
+ Debug_CFLAGS=/MD /Zi /Od /D_DEBUG /RTC1 /Fp"$(Debug_PCH)" $(GLOBAL_CFLAGS)
+-Release_CFLAGS=/MD /O2 /Oy /Oi /G7 /DNDEBUG /DFINAL_RELEASE /Fp"$(Release_PCH)" $(GLOBAL_CFLAGS)
++#Release_CFLAGS=/MD /O2 /Oy /Oi /G7 /DNDEBUG /DFINAL_RELEASE /Fp"$(Release_PCH)" $(GLOBAL_CFLAGS)
++Release_CFLAGS=/MD /O2 /Oy- /Oi /G7 /DNDEBUG /DFINAL_RELEASE /Fp"$(Release_PCH)" $(GLOBAL_CFLAGS)
++
+ 
+ #### LDFLAGS ####
+ GLOBAL_LDFLAGS=/DLL /NOLOGO /SUBSYSTEM:WINDOWS /LARGEADDRESSAWARE /TLBID:1
+@@ -70,6 +71,9 @@ Release_INCS=$(PROJECT_INCS) $(GLOBAL_INCS)
  #### LIBS ####
  GLOBAL_LIBS=/LIBPATH:"$(TOOLKIT)/lib" /LIBPATH:"$(PSDK)/Lib" winmm.lib user32.lib
--PROJECT_LIBS=/LIBPATH:Python24/libs /LIBPATH:boost-1.32.0/libs/ boost_python-vc71-mt-1_32.lib
-+PROJECT_LIBS=/LIBPATH:Python24/libs /LIBPATH:boost-1.32.0/libs/ boost_python-vc71-mt-1_32.lib \
-+		thread.obj exceptions.obj condition.obj xtime.obj mutex.obj once.obj recursive_mutex.obj read_write_mutex.obj tss_hooks.obj
+ PROJECT_LIBS=/LIBPATH:Python24/libs /LIBPATH:boost-1.32.0/libs/ boost_python-vc71-mt-1_32.lib
++# This expansion is not needed anymore in minimal example mod-updater,	
++# but for PB Mod, etc
++# PROJECT_LIBS=/LIBPATH:Python24/libs /LIBPATH:boost-1.32.0/libs/ boost_python-vc71-mt-1_32.lib thread.obj exceptions.obj condition.obj xtime.obj mutex.obj once.obj recursive_mutex.obj read_write_mutex.obj tss_hooks.obj
  Debug_LIBS=$(PROJECT_LIBS) $(GLOBAL_LIBS) msvcprt.lib
  Release_LIBS=$(PROJECT_LIBS) $(GLOBAL_LIBS)
  
+@@ -142,10 +146,10 @@ Release_unfinished:
+ 		@IF EXIST "Release\%i" DEL "Release\%i"
+ 
+ $(Debug_BIN): $(Debug_LINKOBJS) $(Debug_RESOURCE)
+-	$(LD) /out:$(Debug_BIN) $(Debug_LDFLAGS) $(Debug_LIBS) $(Debug_LINKOBJS) $(Debug_RESOURCE)
++	$(LD) /DEF:Updater.def /out:$(Debug_BIN) $(Debug_LDFLAGS) $(Debug_LIBS) $(Debug_LINKOBJS) $(Debug_RESOURCE)
+ 
+ $(Release_BIN): $(Release_LINKOBJS) $(Release_RESOURCE)
+-	$(LD) /out:$(Release_BIN) $(Release_LDFLAGS) $(Release_LIBS) $(Release_LINKOBJS) $(Release_RESOURCE)
++	$(LD) /DEF:Updater.def /out:$(Release_BIN) $(Release_LDFLAGS) $(Release_LIBS) $(Release_LINKOBJS) $(Release_RESOURCE)
+ 
+ .cpp{Debug}.obj:
+ 	@ECHO.>"$*.obj.@"

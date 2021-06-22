@@ -1,8 +1,9 @@
 {
+	"note": "Https is not supported. Civ4's internal python version did not includes required encryption libs.",
     "update_urls": [
-        "http://localhost:8000/[MODNAME]",
-        "https://raw.githubusercontent.com/YggdrasiI/PBStats/master/tests/Updater/server/Updater/updates.html"],
+		"http://kirk.zulan.net/pb/ModUpdates/[MODNAME]",
+        "https://raw.githubusercontent.com/civ4-mp/mod-updater/master/server/Updater"],
     "visit_url": "http://Your_Mod_homepage",
     "current_version": "__vanilla__",
-    "check_at_startup": 0
+    "check_at_startup": 0 
 }

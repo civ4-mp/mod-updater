@@ -310,11 +310,14 @@ class CvEventManager:
     # Updater Mod
     if not hasattr(CvScreensInterface, "showModUpdaterScreen"):
         CvModUpdaterScreen.integrate()
+        # TODO: Hinweis auf das problematische Zeichenverhalten,
+        # wenn man hier das erste mal showScreen aufruft (Zeichnen
+        # hinter das BG-Bild des Hauptmenues!)
+        # Daher hier nicht direkt aufrufen.
 
     # Show ModUpdater screen after Window switch
-    if( bActive and
-       -1 == CyGame().getActivePlayer() and not CyGame().isPitbossHost()):
-        CvScreensInterface.showModUpdaterScreen()
+    if bActive:
+        CvScreensInterface.showModUpdaterScreen(True)
     # Updater Mod END
 
   def onUnInit(self, argsList):
