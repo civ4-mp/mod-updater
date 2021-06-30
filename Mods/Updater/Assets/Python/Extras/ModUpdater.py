@@ -5,7 +5,6 @@ import zipfile
 import os.path
 import os
 import re
-import urllib
 import md5
 
 import simplejson  # Add this file
@@ -36,18 +35,33 @@ except:
     DUMMY_MOD_PATH = os.path.join("/", "dev", "shm", _MOD_NAME_FALLBACK_)
     #Note that __main__ overwrites this value, now.
 
-# Because Python 2.4 version has no urllib.urlopen().getcode()
-class Urlopen_with_errcode(urllib.FancyURLopener):
-    errcode = 200
+# Try-catch of urllib to avoid fancy issue, see
+# https://www.realmsbeyond.net/forums/showthread.php?tid=10218&pid=787174#pid787174
+# A strange issue because it's a buildin module:
+#    <module 'urllib' from '..\WARLORDS\ASSETS\PYTHON\SYSTEM\urllib.pyc'>
+# With this catch the overall startup is not disturbed and the ingame GUI is
+# visible.
+try:
+    import urllib
+    URLLIB_OK = True
+except:
+    URLLIB_OK = False
 
-    def getcode(self):
-        return self.errcode
+if URLLIB_OK:
+    # Extend FancyURLopener because Python 2.4 version
+    # has no urllib.urlopen().getcode()
+    class Urlopen_with_errcode(urllib.FancyURLopener):
+        errcode = 200
 
-    def http_error_default(self, url, fp, errcode, errmsg, headers):
-        self.errcode = errcode
+        def getcode(self):
+            return self.errcode
 
-    #def http_error_404(self, url, fp, errcode, errmsg, headers, data=None):
-    #    self.errcode = errcode
+        def http_error_default(self, url, fp, errcode, errmsg, headers):
+            self.errcode = errcode
+
+        #def http_error_404(self, url, fp, errcode, errmsg, headers, data=None):
+        #    self.errcode = errcode
+
 
 class ModUpdater:
     Config_file = "update_config.json"
