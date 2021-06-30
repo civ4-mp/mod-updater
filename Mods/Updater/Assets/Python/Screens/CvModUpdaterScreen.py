@@ -179,9 +179,11 @@ class CvModUpdaterScreen( CvPediaScreen.CvPediaScreen ):
 
     def showScreen(self, bForce=False):
         # Screen construction function
-        # Note: Do not call getScreen in this function during first call.
-        #       This fails in fullscreen mode.
-        # TODO: Update this note. It is not true anymore.
+        # Note: Do not call getScreen in this function before main menu is
+        # drawn. This fails in fullscreen mode.
+        # (In an earlier version of this file this was true for the first call
+        # of showScreen.)
+        # Now, this workaround is not needed anymore.
         self.initScreen()
 
         self.FIRST_DRAWN = True
@@ -245,14 +247,16 @@ class CvModUpdaterScreen( CvPediaScreen.CvPediaScreen ):
         nU = len(self.updater.PendingUpdates)
         print("Num of available updates: %d" % (nU,))
 
-
-        # TODO: Check if the updater is still drawn too early.
-        # This fails (C++ Exception) at early initialisation stages of Civ4!
-        # CyTranslator.getText can not handle variables until the main menu is shown...
-        #self.UPDATER_AVAIL = u"<font=3>" + localText.getText("TXT_KEY_UPDATER_AVAIL", (nU,)).upper() + "</font>"
-        # As workaround, create string by hand
-        avail_txt = localText.getText("TXT_KEY_UPDATER_AVAIL_WORKAROUND", ())
-        self.UPDATER_AVAIL = u"<font=3>%d %s</font>" % (nU, mehrzahl(avail_txt, nU).upper(),)
+        if True:
+            # Attention, this could fail (C++ Exception) at early initialisation stages of Civ4!
+            # CyTranslator.getText can not handle variables until the main menu is shown...
+            self.UPDATER_AVAIL = u"<font=3>" + localText.getText("TXT_KEY_UPDATER_AVAIL", (nU,)).upper() + "</font>"
+        else:
+            # As workaround, create string by hand
+            # I disabled the workaround because the new version of this updater
+            # didn't draw the window too early anymore.
+            avail_txt = localText.getText("TXT_KEY_UPDATER_AVAIL_WORKAROUND", ())
+            self.UPDATER_AVAIL = u"<font=3>%d %s</font>" % (nU, mehrzahl(avail_txt, nU).upper(),)
 
         # Create a new screen
         screen = self.getScreen()
